@@ -15,27 +15,38 @@
 
 (def pico6 "10.146.68.46")
 
-(def server1 {"host" pico5 "port" 5455})
+(def server1 {"host" pico5 "port" 5445})
 
-(def server2 {"host" pico6 "port" 5455})
+(def server2 {"host" pico6 "port" 5445})
+
+(defn set-connection-retry-params [locator]
+  (. locator (setRetryInterval 2000))
+  (. locator (setRetryIntervalMultiplier 2.0))
+  (. locator (setMaxRetryInterval 20000))
+  (. locator (setConfirmationWindowSize 200000))
+  (. locator (setClientFailureCheckPeriod 3000))
+  (. locator (setFailoverOnInitialConnection true))
+  (. locator (setInitialConnectAttempts -1)))
 
 ;;TODO figure out exactly how windowsize corresponds to ackbatchsize. Maybe ackbatchsize should just be 0
 (defn create-session [username passwd auto-commit-sends auto-commit-acks pre-ack batch-size]
   (let [locator (HornetQClient/createServerLocatorWithHA (DiscoveryGroupConfiguration. refresh-timeout discovery-initial-wait-timeout (UDPBroadcastGroupConfiguration. group-address group-port nil -1)))
+        _ (set-connection-retry-params locator)
         factory (.createSessionFactory locator)]
     (. factory (createSession username passwd false auto-commit-sends auto-commit-acks pre-ack batch-size))))
 
 (defn create-static-session [servers username passwd auto-commit-sends auto-commit-acks pre-ack batch-size]
   (let [configs (map #(TransportConfiguration. (.getName (.getClass (NettyConnectorFactory.))) %) servers)
         locator (HornetQClient/createServerLocatorWithHA (into-array TransportConfiguration configs))
+        _ (set-connection-retry-params locator)
         factory (.createSessionFactory locator)]
     (. factory (createSession username passwd false auto-commit-sends auto-commit-acks pre-ack batch-size))))
 
 (defn default-session []
-  (create-session "guest" "guest" true true false 1))
+  (create-session "kasia2" "kasia2" true true false 1))
 
 (defn default-static-session []
-  (create-static-session [server1 server2] "guest" "guest" true true false 1))
+  (create-static-session [server1 server2] "kasia2" "kasia2" true true false 1))
 
 (defn create-queue [session address queue durable]
   (. session (createQueue address queue durable)))
@@ -80,6 +91,15 @@
   (let [m (.receiveImmediate c)]
     (prn "M" (.readString (.getBodyBuffer m)))))
 
+(defn send-msg-on-queue [msg queue durable]
+  (let [s (default-static-session)
+        p (get-producer s queue)
+        m (create-message s msg durable)]
+    (.start s)
+    (send-msg p m)
+    (.stop s)
+    (.close s)))
+
 (defn receive-session [qn]
   (let [s (default-static-session)
         q (create-temp-queue s qn qn)
@@ -90,3 +110,13 @@
     (let [c (get-consumer s qn)]
       (prn (receive-msg c)))
     (.close s)))
+
+(defn setup-async [qn]
+  (let [s (default-static-session)
+        q (create-queue s qn qn true)
+       ; p (get-producer s qn)
+       ; m (create-message s "HEJ" true)
+        ]
+    (start-async-consumer s qn (fn [msg] (prn "MSG = " (.readString (.getBodyBuffer msg)))))
+    (.start s)
+    [s]))
