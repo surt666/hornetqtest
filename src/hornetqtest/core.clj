@@ -1,5 +1,5 @@
 (ns hornetqtest.core
-  (:import (org.hornetq.api.core.client HornetQClient MessageHandler)
+  (:import (org.hornetq.api.core.client HornetQClient MessageHandler FailoverEventListener FailoverEventType)
            (org.hornetq.api.core UDPBroadcastGroupConfiguration TransportConfiguration DiscoveryGroupConfiguration)
            (org.hornetq.core.remoting.impl.netty NettyConnectorFactory)))
 
@@ -24,9 +24,16 @@
   (. locator (setRetryIntervalMultiplier 2.0))
   (. locator (setMaxRetryInterval 20000))
   (. locator (setConfirmationWindowSize 200000))
-  (. locator (setClientFailureCheckPeriod 3000))
+  (. locator (setClientFailureCheckPeriod 10000))
   (. locator (setFailoverOnInitialConnection true))
-  (. locator (setInitialConnectAttempts -1)))
+  (. locator (setInitialConnectAttempts 5))
+  (. locator (setConnectionTTL 10000))
+  (. locator (setReconnectAttempts 10)))
+
+(defn create-failover-listener []
+  (reify FailoverEventListener
+    (failoverEvent [this et]
+      (prn "Failover event triggered :" et))))
 
 ;;TODO figure out exactly how windowsize corresponds to ackbatchsize. Maybe ackbatchsize should just be 0
 (defn create-session [username passwd auto-commit-sends auto-commit-acks pre-ack batch-size]
@@ -39,7 +46,8 @@
   (let [configs (map #(TransportConfiguration. (.getName (.getClass (NettyConnectorFactory.))) %) servers)
         locator (HornetQClient/createServerLocatorWithHA (into-array TransportConfiguration configs))
         _ (set-connection-retry-params locator)
-        factory (.createSessionFactory locator)]
+        factory (.createSessionFactory locator)
+        _ (. factory (addFailoverListener (create-failover-listener)))]
     (. factory (createSession username passwd false auto-commit-sends auto-commit-acks pre-ack batch-size))))
 
 (defn default-session []
@@ -111,12 +119,15 @@
       (prn (receive-msg c)))
     (.close s)))
 
+(defn print-message-handler [msg]
+  (prn "MSG = " (.readString (.getBodyBuffer msg)))
+  (.acknowledge msg))
+
 (defn setup-async [qn]
   (let [s (default-static-session)
         q (create-queue s qn qn true)
-       ; p (get-producer s qn)
-       ; m (create-message s "HEJ" true)
-        ]
-    (start-async-consumer s qn (fn [msg] (prn "MSG = " (.readString (.getBodyBuffer msg)))))
+        p (get-producer s qn)
+        m (create-message s "HEJ2" true)]
+    (start-async-consumer s qn print-message-handler)
     (.start s)
-    [s]))
+    [s p m q]))
